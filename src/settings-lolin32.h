@@ -79,6 +79,6 @@
 
 // (optional) For measuring battery-voltage a voltage-divider is necessary. Their values need to be configured here.
 #ifdef MEASURE_BATTERY_VOLTAGE
-    uint8_t rdiv1 = 129;                               // Rdiv1 of voltage-divider (kOhms) (measure exact value with multimeter!)
-    uint16_t rdiv2 = 129;                              // Rdiv2 of voltage-divider (kOhms) (measure exact value with multimeter!) => used to measure voltage via ADC!
+    uint8_t rdiv1 = 100;                               // Rdiv1 of voltage-divider (kOhms) (measure exact value with multimeter!)
+    uint16_t rdiv2 = 100;                              // Rdiv2 of voltage-divider (kOhms) (measure exact value with multimeter!) => used to measure voltage via ADC!
 #endif
