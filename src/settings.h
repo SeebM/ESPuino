@@ -48,7 +48,7 @@
 #endif
 
 #ifdef RFID_READER_TYPE_MFRC522_SPI
-    uint8_t rfidGain = 0x07 << 4;      // Sensitivity of RC522. For possible values see reference: https://forum.espuino.de/uploads/default/original/1X/9de5f8d35cbc123c1378cad1beceb3f51035cec0.png
+    uint8_t rfidGain = 0x04 << 4;      // Sensitivity of RC522. For possible values see reference: https://forum.espuino.de/uploads/default/original/1X/9de5f8d35cbc123c1378cad1beceb3f51035cec0.png
 #endif
 
 
