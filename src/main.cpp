@@ -132,6 +132,8 @@ typedef struct { // Bit field
     bool playlistFinished:              1;      // If whole playlist is finished
     uint8_t playUntilTrackNumber:       6;      // Number of tracks to play after which uC goes to sleep
     uint8_t seekmode:                   2;      // If seekmode is active and if yes: forward or backwards?
+    bool newPlayMono:                   1;      // true if mono; false if stereo (helper)
+    bool currentPlayMono:               1;      // true if mono; false if stereo
 } playProps;
 playProps playProperties;
 
@@ -265,7 +267,7 @@ TaskHandle_t fileStorageTaskHandle;
     static TwoWire i2cBusTwo = TwoWire(1);
 #endif
 #ifdef RFID_READER_TYPE_MFRC522_I2C
-    static MFRC522 mfrc522(MFRC522_ADDR, MFRC522_RST_PIN, &i2cBusTwo);
+    static MFRC522_I2C mfrc522(MFRC522_ADDR, MFRC522_RST_PIN, &i2cBusTwo);
 #endif
 
 #ifdef PORT_EXPANDER_ENABLE
@@ -474,6 +476,10 @@ void IRAM_ATTR onTimer() {
     // Get last RFID-tag applied from NVS
     void recoverLastRfidPlayed(void) {
         if (recoverLastRfid) {
+            if (operationMode == OPMODE_BLUETOOTH) {        // Don't recover if BT-mode is desired
+                recoverLastRfid = false;
+                return;
+            }
             recoverLastRfid = false;
             String lastRfidPlayed = prefsSettings.getString("lastRfid", "-1");
             if (!lastRfidPlayed.compareTo("-1")) {
@@ -1206,6 +1212,7 @@ bool fileValid(const char *_fileItem) {
          endsWith(_fileItem, ".m3u") || endsWith(_fileItem, ".M3U") ||
          endsWith(_fileItem, ".m4a") || endsWith(_fileItem, ".M4A") ||
          endsWith(_fileItem, ".wav") || endsWith(_fileItem, ".WAV") ||
+         endsWith(_fileItem, ".flac") || endsWith(_fileItem, ".FLAC") ||
          endsWith(_fileItem, ".asx") || endsWith(_fileItem, ".ASX"));
 }
 
@@ -1428,6 +1435,10 @@ void playAudio(void *parameter) {
     static Audio audio;
     audio.setPinout(I2S_BCLK, I2S_LRC, I2S_DOUT);
     audio.setVolume(initVolume);
+    audio.forceMono(playProperties.currentPlayMono);
+    if (playProperties.currentPlayMono) {
+        audio.setTone(3,0,0);
+    }
 
 
     uint8_t currentVolume;
@@ -1468,7 +1479,7 @@ void playAudio(void *parameter) {
 
                 // If we're in audiobook-mode and apply a modification-card, we don't
                 // want to save lastPlayPosition for the mod-card but for the card that holds the playlist
-                if(currentRfidTagId != NULL){
+                if (currentRfidTagId != NULL) {
                     strncpy(playProperties.playRfidTag, currentRfidTagId, sizeof(playProperties.playRfidTag) / sizeof(playProperties.playRfidTag[0]));
                 }
 
@@ -1812,6 +1823,19 @@ void playAudio(void *parameter) {
             playProperties.seekmode = SEEK_NORMAL;
         }
 
+        // Handle if mono/stereo should be changed (e.g. if plugging headphones)
+        if (playProperties.newPlayMono != playProperties.currentPlayMono) {
+            playProperties.currentPlayMono = playProperties.newPlayMono;
+            audio.forceMono(playProperties.currentPlayMono);
+            if (playProperties.currentPlayMono) {
+                loggerNl(serialDebug, newPlayModeMono, LOGLEVEL_NOTICE);
+                audio.setTone(3,0,0);
+            } else {
+                loggerNl(serialDebug, newPlayModeStereo, LOGLEVEL_NOTICE);
+                audio.setTone(0,0,0);
+            }
+        }
+
         // Calculate relative position in file (for neopixel) for SD-card-mode
         #ifdef NEOPIXEL_ENABLE
             if (!playProperties.playlistFinished && playProperties.playMode != WEBSTREAM) {
@@ -1823,6 +1847,11 @@ void playAudio(void *parameter) {
                 playProperties.currentRelPos = 0;
             }
         #endif
+
+        // If error occured: remove playlist from ESPuino
+        if ((playProperties.playMode != NO_PLAYLIST) && !audio.isRunning()) {
+            playProperties.trackFinished = true;
+        }
 
         audio.loop();
         if (playProperties.playlistFinished || playProperties.pausePlay) {
@@ -2069,7 +2098,7 @@ void showLed(void *parameter) {
         }
         if (gotoSleep) { // If deepsleep is planned, turn off LEDs first in order to avoid LEDs still glowing when ESP32 is in deepsleep
             if (!turnedOffLeds) {
-                FastLED.clear();
+                FastLED.clear(true);
                 turnedOffLeds = true;
             }
 
@@ -2299,11 +2328,11 @@ void showLed(void *parameter) {
         switch (playProperties.playMode) {
             case NO_PLAYLIST:                   // If no playlist is active (idle)
                 #ifdef BLUETOOTH_ENABLE
-                if(operationMode == OPMODE_BLUETOOTH ) {
+                if (operationMode == OPMODE_BLUETOOTH) {
                     idleColor = CRGB::Blue;
                 } else  {
                 #endif
-                    if(wifiManager() == WL_CONNECTED) {
+                    if (wifiManager() == WL_CONNECTED) {
                         idleColor = CRGB::White;
                     } else {
                         idleColor = CRGB::Green;
@@ -2781,14 +2810,6 @@ void trackQueueDispatcher(const char *_itemToPlay, const uint32_t _lastPlayPos, 
 // Modification-cards can change some settings (e.g. introducing track-looping or sleep after track/playlist).
 // This function handles them.
 void doRfidCardModifications(const uint32_t mod) {
-    #ifdef PLAY_LAST_RFID_AFTER_REBOOT
-	    if (recoverLastRfid) {
-            recoverLastRfid = false;
-            // We don't want to remember modification-cards
-            return;
-        }
-	#endif
-
     doCmdAction(mod);
 }
 
@@ -3320,7 +3341,7 @@ void rfidPreferenceLookupHandler (void) {
 
                 #ifdef BLUETOOTH_ENABLE
                 // if music rfid was read, go back to normal mode
-                if(operationMode == OPMODE_BLUETOOTH) {
+                if (operationMode == OPMODE_BLUETOOTH) {
                     setOperationMode(OPMODE_NORMAL);
                 }
                 #endif
@@ -3385,6 +3406,7 @@ void accessPointStart(const char *SSID, IPAddress ip, IPAddress netmask) {
     accessPointStarted = true;
 }
 
+
 // Reads stored WiFi-status from NVS
 bool getWifiEnableStatusFromNVS(void) {
     uint32_t wifiStatus = prefsSettings.getUInt("enableWifi", 99);
@@ -3424,10 +3446,14 @@ bool writeWifiStatusToNVS(bool wifiStatus) {
     return true;
 }
 
+
+// Reads from NVS, if bluetooth or "normal" mode is desired
 uint8_t readOperationModeFromNVS(void) {
     return prefsSettings.getUChar("operationMode", OPMODE_NORMAL);
 }
 
+
+// Writes to NVS, if bluetooth or "normal" mode is desired
 bool setOperationMode(uint8_t newOperationMode) {
     uint8_t currentOperationMode = prefsSettings.getUChar("operationMode", OPMODE_NORMAL);
     if(currentOperationMode != newOperationMode) {
@@ -3857,8 +3883,14 @@ void setupVolume(void) {
     #else
         if (digitalReadFromAll(HP_DETECT)) {
             maxVolume = maxVolumeSpeaker;               // 1 if headphone is not connected
+            #ifdef PLAY_MONO_SPEAKER
+                playProperties.newPlayMono = true;
+            #else
+                playProperties.newPlayMono = false;
+            #endif
         } else {
             maxVolume = maxVolumeHeadphone;             // 0 if headphone is connected (put to GND)
+            playProperties.newPlayMono = false;         // always stereo for headphones!
         }
         snprintf(logBuf, serialLoglength, "%s: %u", (char *) FPSTR(maxVolumeSet), maxVolume);
         loggerNl(serialDebug, logBuf, LOGLEVEL_INFO);
@@ -3874,10 +3906,16 @@ void setupVolume(void) {
         if (headphoneLastDetectionState != currentHeadPhoneDetectionState && (millis() - headphoneLastDetectionTimestamp >= headphoneLastDetectionDebounce)) {
             if (currentHeadPhoneDetectionState) {
                 maxVolume = maxVolumeSpeaker;
+                #ifdef PLAY_MONO_SPEAKER
+                    playProperties.newPlayMono = true;
+                #else
+                    playProperties.newPlayMono = false;
+                #endif
             } else {
                 maxVolume = maxVolumeHeadphone;
+                playProperties.newPlayMono = false;                 // Always stereo for headphones
                 if (currentVolume > maxVolume) {
-                    volumeToQueueSender(maxVolume, true);         // Lower volume for headphone if headphone's maxvolume is exceeded by volume set in speaker-mode
+                    volumeToQueueSender(maxVolume, true);           // Lower volume for headphone if headphone's maxvolume is exceeded by volume set in speaker-mode
                 }
             }
             headphoneLastDetectionState = currentHeadPhoneDetectionState;
@@ -4657,6 +4695,13 @@ void setup() {
     playProperties.trackFinished = NULL;
     playProperties.playlistFinished = true;
     playProperties.seekmode = SEEK_NORMAL;
+    #ifdef PLAY_MONO_SPEAKER
+        playProperties.newPlayMono = true;
+        playProperties.currentPlayMono = true;
+    #else
+        playProperties.newPlayMono = false;
+        playProperties.currentPlayMono = false;
+    #endif
 
     // Examples for serialized RFID-actions that are stored in NVS
     // #<file/folder>#<startPlayPositionInBytes>#<playmode>#<trackNumberToStartWith>
