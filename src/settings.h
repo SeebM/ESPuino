@@ -40,7 +40,7 @@
     #define USEROTARY_ENABLE                // If rotary-encoder is used (don't forget to review WAKEUP_BUTTON if you disable this feature!)
     #define BLUETOOTH_ENABLE                // If enabled and bluetooth-mode is active, you can stream to your ESPuino via bluetooth (a2dp-sink).
     //#define IR_CONTROL_ENABLE             // Enables remote control
-
+    #define NFC_PAUSE                       // Pause/Play by remove/adding NFC tag
 
     //################## select SD card mode #############################
     //#define SD_MMC_1BIT_MODE              // run SD card in SD-MMC 1Bit mode

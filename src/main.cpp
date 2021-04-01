@@ -338,6 +338,14 @@ QueueHandle_t rfidCardQueue;
 RingbufHandle_t explorerFileUploadRingBuffer;
 QueueHandle_t explorerFileUploadStatusQueue;
 
+// Section Inserted from Elmar_Ops
+#ifdef NFC_PAUSE
+char *prevCardIdString = strndup((char*) "0", cardIdSize); 
+bool is_card_present = false;
+uint8_t control = 0x00;
+#endif
+//*********************************
+
 // Only enable those buttons that are not disabled (99 or >115)
 // 0 -> 39: GPIOs
 // 100 -> 115: Port-expander
@@ -1512,6 +1520,11 @@ void playAudio(void *parameter) {
 
             if (playProperties.playlistFinished && trackCommand != 0) {
                 loggerNl(serialDebug, (char *) FPSTR(noPlaymodeChangeIfIdle), LOGLEVEL_NOTICE);
+                //****NFC_PAUSE from Elamr_OPS
+                #ifdef NFC_PAUSE
+                    *prevCardIdString = NULL; // reset prev card
+                #endif
+                /**********************/
                 trackCommand = 0;
                 #ifdef NEOPIXEL_ENABLE
                     showLedError = true;
@@ -1889,8 +1902,10 @@ void rfidScanner(void *parameter) {
             }
 
             //mfrc522.PICC_DumpToSerial(&(mfrc522.uid));
-            mfrc522.PICC_HaltA();
-            mfrc522.PCD_StopCrypto1();
+             #ifndef NFC_PAUSE
+                mfrc522.PICC_HaltA();
+                mfrc522.PCD_StopCrypto1();
+            #endif
 
             if (psramInit()) {
                 cardIdString = (char *) ps_malloc(cardIdSize*3 +1);
@@ -1923,6 +1938,52 @@ void rfidScanner(void *parameter) {
             }
             xQueueSend(rfidCardQueue, &cardIdString, 0);
 //            free(cardIdString);
+            #ifdef NFC_PAUSE
+                while (true)
+                {
+                    esp_task_wdt_reset();
+                    vTaskDelay(10);
+                    control = 0;
+                    for (int i = 0; i < 3; i++)
+                    {
+                        if (!mfrc522.PICC_IsNewCardPresent())
+                        {
+                            if (mfrc522.PICC_ReadCardSerial())
+                            {
+                                //Serial.print('a');
+                                control |= 0x16;
+                            }
+                            if (mfrc522.PICC_ReadCardSerial())
+                            {
+                                //Serial.print('b');
+                                control |= 0x16;
+                            }
+                            //Serial.print('c');
+                            control += 0x1;
+                        }
+                        //Serial.print('d');
+                        control += 0x4;
+                    }
+
+                    //Serial.println(control);
+                    if (control == 13 || control == 14)
+                    {
+                        //card is still there
+                    }
+                    else
+                    {
+                        break;
+                    }
+                }
+                Serial.println("CardRemoved");
+                if (!playProperties.pausePlay)
+                {
+                    trackControlToQueueSender(PAUSEPLAY);
+                    Serial.println("...continue");
+                }
+                mfrc522.PICC_HaltA();
+                mfrc522.PCD_StopCrypto1();
+            #endif
         }
     }
     vTaskDelete(NULL);
@@ -3345,8 +3406,27 @@ void rfidPreferenceLookupHandler (void) {
                     setOperationMode(OPMODE_NORMAL);
                 }
                 #endif
-
-                trackQueueDispatcher(_file, _lastPlayPos, _playMode, _trackLastPlayed);
+                #ifdef NFC_PAUSE
+                                if (strcmp(currentRfidTagId, prevCardIdString) == 0)
+                                {
+                                    Serial.println(F("Same Card ..."));
+                                    if (playProperties.pausePlay)
+                                    {
+                                        trackControlToQueueSender(PAUSEPLAY);
+                                        Serial.println(F("...continue"));
+                                    }
+                                }
+                                else
+                                {
+                                    Serial.println(F("New Card ..."));
+                                    prevCardIdString = (char *)malloc(cardIdSize * 3 + 1);
+                                    strcpy(prevCardIdString, currentRfidTagId);
+                                    trackQueueDispatcher(_file, _lastPlayPos, _playMode, _trackLastPlayed);
+                                }
+                #endif
+                #ifndef NFC_PAUSE
+                                trackQueueDispatcher(_file, _lastPlayPos, _playMode, _trackLastPlayed);
+                #endif
             }
         }
     }
