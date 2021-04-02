@@ -255,7 +255,9 @@ AsyncEventSource events("/events");
 #endif
 
 TaskHandle_t mp3Play;
-TaskHandle_t rfid;
+#ifdef RFID_READER_TYPE_PN5180
+    TaskHandle_t rfid;
+#endif
 TaskHandle_t fileStorageTaskHandle;
 
 #ifdef NEOPIXEL_ENABLE
@@ -337,14 +339,6 @@ QueueHandle_t rfidCardQueue;
 
 RingbufHandle_t explorerFileUploadRingBuffer;
 QueueHandle_t explorerFileUploadStatusQueue;
-
-// Section Inserted from Elmar_Ops
-#ifdef NFC_PAUSE
-char *prevCardIdString = strndup((char*) "0", cardIdSize); 
-bool is_card_present = false;
-uint8_t control = 0x00;
-#endif
-//*********************************
 
 // Only enable those buttons that are not disabled (99 or >115)
 // 0 -> 39: GPIOs
@@ -430,7 +424,11 @@ bool processJsonRequest(char *_serialJson);
 void randomizePlaylist (char *str[], const uint32_t count);
 char ** returnPlaylistFromWebstream(const char *_webUrl);
 char ** returnPlaylistFromSD(File _fileOrDirectory);
-void rfidScanner(void *parameter);
+#ifdef RFID_READER_TYPE_PN5180
+    void rfidScanner(void *parameter);
+#else
+    void rfidScanner(void);
+#endif
 void sleepHandler(void) ;
 void sortPlaylist(const char** arr, int n);
 bool startsWith(const char *str, const char *pre);
@@ -968,7 +966,7 @@ void callback(const char *topic, const byte *payload, uint32_t length) {
         if (playProperties.playMode == NO_PLAYLIST) {       // Don't allow sleep-modications if no playlist is active
             loggerNl(serialDebug, (char *) FPSTR(modificatorNotallowedWhenIdle), LOGLEVEL_INFO);
             publishMqtt((char *) FPSTR(topicSleepState), 0, false);
-             actionError();
+            actionError();
             return;
         }
         if (strcmp(receivedString, "EOP") == 0) {
@@ -1023,12 +1021,12 @@ void callback(const char *topic, const byte *payload, uint32_t length) {
         if (strcmp(receivedString, "OFF") == 0) {
             lockControls = false;
             loggerNl(serialDebug, (char *) FPSTR(allowButtons), LOGLEVEL_NOTICE);
-                       actionOk();
+            actionOk();
 
         } else if (strcmp(receivedString, "ON") == 0) {
             lockControls = true;
             loggerNl(serialDebug, (char *) FPSTR(lockButtons), LOGLEVEL_NOTICE);
-                       actionOk();
+            actionOk();
         }
     }
 
@@ -1499,11 +1497,6 @@ void playAudio(void *parameter) {
 
             if (playProperties.playlistFinished && trackCommand != 0) {
                 loggerNl(serialDebug, (char *) FPSTR(noPlaymodeChangeIfIdle), LOGLEVEL_NOTICE);
-                //****NFC_PAUSE from Elamr_OPS
-                #ifdef NFC_PAUSE
-                    *prevCardIdString = NULL; // reset prev card
-                #endif
-                /**********************/
                 trackCommand = 0;
                 actionError();
                 continue;
@@ -1820,11 +1813,6 @@ void playAudio(void *parameter) {
             }
         #endif
 
-        // If error occured: remove playlist from ESPuino
-        if ((playProperties.playMode != NO_PLAYLIST) && !audio.isRunning()) {
-            playProperties.trackFinished = true;
-        }
-
         audio.loop();
         if (playProperties.playlistFinished || playProperties.pausePlay) {
             vTaskDelay(portTICK_PERIOD_MS*10);                   // Waste some time if playlist is not active
@@ -1832,7 +1820,7 @@ void playAudio(void *parameter) {
             lastTimeActiveTimestamp = millis();                  // Refresh if playlist is active so uC will not fall asleep due to reaching inactivity-time
         }
 
-       if (audio.isRunning()) {
+        if (audio.isRunning()) {
             settleCount = 0;
         }
 
@@ -1852,118 +1840,64 @@ void playAudio(void *parameter) {
 
 
 #if defined RFID_READER_TYPE_MFRC522_SPI || defined RFID_READER_TYPE_MFRC522_I2C
-// Instructs RFID-scanner to scan for new RFID-tags
-void rfidScanner(void *parameter) {
+// Instructs RFID-scanner to scan for new RFID-tags using RC522 (running as function)
+void rfidScanner(void) {
     byte cardId[cardIdSize];
     char *cardIdString;
 
-    for (;;) {
-        esp_task_wdt_reset();
-        vTaskDelay(10);
-        if ((millis() - lastRfidCheckTimestamp) >= RFID_SCAN_INTERVAL) {
-            lastRfidCheckTimestamp = millis();
-            // Reset the loop if no new card is present on the sensor/reader. This saves the entire process when idle.
+    if ((millis() - lastRfidCheckTimestamp) >= RFID_SCAN_INTERVAL) {
+        lastRfidCheckTimestamp = millis();
+        // Reset the loop if no new card is present on the sensor/reader. This saves the entire process when idle.
 
-            if (!mfrc522.PICC_IsNewCardPresent()) {
-                continue;
-            }
-
-            // Select one of the cards
-            if (!mfrc522.PICC_ReadCardSerial()) {
-                continue;
-            }
-
-            //mfrc522.PICC_DumpToSerial(&(mfrc522.uid));
-             #ifndef NFC_PAUSE
-                mfrc522.PICC_HaltA();
-                mfrc522.PCD_StopCrypto1();
-            #endif
-
-            if (psramInit()) {
-                cardIdString = (char *) ps_malloc(cardIdSize*3 +1);
-            } else {
-                cardIdString = (char *) malloc(cardIdSize*3 +1);
-            }
-
-            if (cardIdString == NULL) {
-                logger(serialDebug, (char *) FPSTR(unableToAllocateMem), LOGLEVEL_ERROR);
-                actionError();
-                continue;
-            }
-
-            uint8_t n = 0;
-            logger(serialDebug, (char *) FPSTR(rfidTagDetected), LOGLEVEL_NOTICE);
-            for (uint8_t i=0; i<cardIdSize; i++) {
-                cardId[i] = mfrc522.uid.uidByte[i];
-
-                snprintf(logBuf, serialLoglength, "%02x", cardId[i]);
-                logger(serialDebug, logBuf, LOGLEVEL_NOTICE);
-
-                n += snprintf (&cardIdString[n], sizeof(cardIdString) / sizeof(cardIdString[0]), "%03d", cardId[i]);
-                if (i<(cardIdSize-1)) {
-                    logger(serialDebug, "-", LOGLEVEL_NOTICE);
-                } else {
-                    logger(serialDebug, "\n", LOGLEVEL_NOTICE);
-                }
-            }
-            xQueueSend(rfidCardQueue, &cardIdString, 0);
-//            free(cardIdString);
-            #ifdef NFC_PAUSE
-                while (true)
-                {
-                    esp_task_wdt_reset();
-                    vTaskDelay(10);
-                    control = 0;
-                    for (int i = 0; i < 3; i++)
-                    {
-                        if (!mfrc522.PICC_IsNewCardPresent())
-                        {
-                            if (mfrc522.PICC_ReadCardSerial())
-                            {
-                                //Serial.print('a');
-                                control |= 0x16;
-                            }
-                            if (mfrc522.PICC_ReadCardSerial())
-                            {
-                                //Serial.print('b');
-                                control |= 0x16;
-                            }
-                            //Serial.print('c');
-                            control += 0x1;
-                        }
-                        //Serial.print('d');
-                        control += 0x4;
-                    }
-
-                    //Serial.println(control);
-                    if (control == 13 || control == 14)
-                    {
-                        //card is still there
-                    }
-                    else
-                    {
-                        break;
-                    }
-                }
-                Serial.println("CardRemoved");
-                if (!playProperties.pausePlay)
-                {
-                    trackControlToQueueSender(PAUSEPLAY);
-                    Serial.println("...continue");
-                }
-                mfrc522.PICC_HaltA();
-                mfrc522.PCD_StopCrypto1();
-            #endif
+        if (!mfrc522.PICC_IsNewCardPresent()) {
+            return;
         }
+
+        // Select one of the cards
+        if (!mfrc522.PICC_ReadCardSerial()) {
+            return;
+        }
+
+        //mfrc522.PICC_DumpToSerial(&(mfrc522.uid));
+        mfrc522.PICC_HaltA();
+        mfrc522.PCD_StopCrypto1();
+
+        if (psramInit()) {
+            cardIdString = (char *) ps_malloc(cardIdSize*3 +1);
+        } else {
+            cardIdString = (char *) malloc(cardIdSize*3 +1);
+        }
+
+        if (cardIdString == NULL) {
+            logger(serialDebug, (char *) FPSTR(unableToAllocateMem), LOGLEVEL_ERROR);
+            actionError();
+            return;
+        }
+
+        uint8_t n = 0;
+        logger(serialDebug, (char *) FPSTR(rfidTagDetected), LOGLEVEL_NOTICE);
+        for (uint8_t i=0; i<cardIdSize; i++) {
+            cardId[i] = mfrc522.uid.uidByte[i];
+
+            snprintf(logBuf, serialLoglength, "%02x", cardId[i]);
+            logger(serialDebug, logBuf, LOGLEVEL_NOTICE);
+
+            n += snprintf (&cardIdString[n], sizeof(cardIdString) / sizeof(cardIdString[0]), "%03d", cardId[i]);
+            if (i<(cardIdSize-1)) {
+                logger(serialDebug, "-", LOGLEVEL_NOTICE);
+            } else {
+                logger(serialDebug, "\n", LOGLEVEL_NOTICE);
+            }
+        }
+        xQueueSend(rfidCardQueue, &cardIdString, 0);
     }
-    vTaskDelete(NULL);
 }
 #endif
 
 
-
 #ifdef RFID_READER_TYPE_PN5180
-// Instructs RFID-scanner to scan for new RFID-tags using PN5180
+// Instructs RFID-scanner to scan for new RFID-tags using PN5180 (running as task)
+// Runs as task (instead of function) because it takes about 230 ms (IDLE) and 500 ms (non-IDLE)
 void rfidScanner(void *parameter) {
     static PN5180ISO14443 nfc14443(RFID_CS, RFID_BUSY, RFID_RST);
     static PN5180ISO15693 nfc15693(RFID_CS, RFID_BUSY, RFID_RST);
@@ -2612,7 +2546,6 @@ void volumeToQueueSender(const int32_t _newVolume, bool reAdjustRotary) {
 
 // Adds new control-command to control-queue
 void trackControlToQueueSender(const uint8_t trackCommand) {
-    loggerNl(serialDebug, strcat("Command: ",(char *) trackCommand), LOGLEVEL_INFO);
     xQueueSend(trackControlQueue, &trackCommand, 0);
 }
 
@@ -3178,9 +3111,9 @@ void doCmdAction(const uint16_t mod) {
                     if (wifiManager() == WL_CONNECTED && !ftpEnableLastStatus && !ftpEnableCurrentStatus) {
                         ftpEnableLastStatus = true;
                         actionOk();
-                    } else {                            
-                            loggerNl(serialDebug, (char *) FPSTR(unableToStartFtpServer), LOGLEVEL_ERROR);
-                            actionError();                        
+                    } else {
+                        loggerNl(serialDebug, (char *) FPSTR(unableToStartFtpServer), LOGLEVEL_ERROR);
+                        actionError();
                     }
                 break;
             }
@@ -3315,27 +3248,8 @@ void rfidPreferenceLookupHandler (void) {
                     setOperationMode(OPMODE_NORMAL);
                 }
                 #endif
-                #ifdef NFC_PAUSE
-                                if (strcmp(currentRfidTagId, prevCardIdString) == 0)
-                                {
-                                    Serial.println(F("Same Card ..."));
-                                    if (playProperties.pausePlay)
-                                    {
-                                        trackControlToQueueSender(PAUSEPLAY);
-                                        Serial.println(F("...continue"));
-                                    }
-                                }
-                                else
-                                {
-                                    Serial.println(F("New Card ..."));
-                                    prevCardIdString = (char *)malloc(cardIdSize * 3 + 1);
-                                    strcpy(prevCardIdString, currentRfidTagId);
-                                    trackQueueDispatcher(_file, _lastPlayPos, _playMode, _trackLastPlayed);
-                                }
-                #endif
-                #ifndef NFC_PAUSE
-                                trackQueueDispatcher(_file, _lastPlayPos, _playMode, _trackLastPlayed);
-                #endif
+
+                trackQueueDispatcher(_file, _lastPlayPos, _playMode, _trackLastPlayed);
             }
         }
     }
@@ -4787,6 +4701,7 @@ void setup() {
    Serial.println(F(" | |___   ___) | |  __/  | |_| | | | | | | | | (_) |"));
    Serial.println(F(" |_____| |____/  |_|      \\__,_| |_| |_| |_|  \\___/ "));
    Serial.println(F(" Rfid-controlled musicplayer\n"));
+   Serial.println(F(" Rev 20210402-2\n"));
    // print wake-up reason
    printWakeUpReason();
    #ifdef PN5180_ENABLE_LPCD
@@ -4845,8 +4760,8 @@ void setup() {
     // Get initial LED-brightness from NVS
     uint8_t nvsILedBrightness = prefsSettings.getUChar("iLedBrightness", 0);
     if (nvsILedBrightness) {
-            initialLedBrightness = nvsILedBrightness;
-            ledBrightness = nvsILedBrightness;
+        initialLedBrightness = nvsILedBrightness;
+        ledBrightness = nvsILedBrightness;
         snprintf(logBuf, serialLoglength, "%s: %d", (char *) FPSTR(initialBrightnessfromNvs), nvsILedBrightness);
         loggerNl(serialDebug, logBuf, LOGLEVEL_INFO);
     } else {
@@ -5057,16 +4972,18 @@ void setup() {
     timerAlarmWrite(timer, 10000, true);        // 100 Hz
     timerAlarmEnable(timer);
 
-    // Create tasks
-    xTaskCreatePinnedToCore(
-        rfidScanner, /* Function to implement the task */
-        "rfidhandling", /* Name of the task */
-        2000,  /* Stack size in words */
-        NULL,  /* Task input parameter */
-        1,  /* Priority of the task */
-        &rfid,  /* Task handle. */
-        0 /* Core where the task should run */
-    );
+    #ifdef RFID_READER_TYPE_PN5180
+        // Create task for rfid
+        xTaskCreatePinnedToCore(
+            rfidScanner, /* Function to implement the task */
+            "rfidhandling", /* Name of the task */
+            1500,  /* Stack size in words */
+            NULL,  /* Task input parameter */
+            1,  /* Priority of the task */
+            &rfid,  /* Task handle. */
+            0 /* Core where the task should run */
+        );
+    #endif
 
     // Activate internal pullups for all enabled buttons
     #ifdef BUTTON_0_ENABLE
@@ -5160,6 +5077,9 @@ void bluetoothHandler(void) {
 #endif
 
 void loop() {
+    #ifndef RFID_READER_TYPE_PN5180
+        rfidScanner();      // PN5180 runs as task; RC522 as function
+    #endif
 
     #ifdef BLUETOOTH_ENABLE
     if(operationMode == OPMODE_BLUETOOTH) {

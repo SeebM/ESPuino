@@ -102,7 +102,7 @@
     #define BUTTON_0_SHORT    CMD_NEXTTRACK
     #define BUTTON_1_SHORT    CMD_PREVTRACK
     #define BUTTON_2_SHORT    CMD_NOTHING
-    #define BUTTON_3_SHORT    CMD_MEASUREBATTERY
+    #define BUTTON_3_SHORT    CMD_PLAYPAUSE
     #define BUTTON_4_SHORT    CMD_NOTHING
     #define BUTTON_5_SHORT    CMD_NOTHING
 
@@ -152,7 +152,7 @@
     uint16_t intervalToLongPress = 700;                 // Interval in ms to distinguish between short and long press of previous/next-button
 
     // RFID
-    #define RFID_SCAN_INTERVAL 300                      // Interval-time in ms (how often is RFID read?)
+    #define RFID_SCAN_INTERVAL 100                      // Interval-time in ms (how often is RFID read?)
 
     // Automatic restart
     #ifdef SHUTDOWN_IF_SD_BOOT_FAILS
